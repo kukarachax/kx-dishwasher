@@ -152,25 +152,47 @@ void defPins() {
   digitalWrite(BUSY_LIGHT_PIN, LOW);
 }
 
+bool waitAsync(uint32_t waitTime) {
+  static uint32_t breakTime;
+
+  if (waitTime == 0)  
+    breakTime = millis();
+
+  if (millis() - breakTime > waitTime) 
+    return true;
+  
+  return false;
+}
+
 void wash() {
   switch (wash_stage) {
   case 0:
-    dispPrint("end");
     relayAllOff();
   case 1:
     digitalWrite(INPUT_REL_PIN, LOW); //вкл налив
+
     if (!isFull) //ожидание налива
-      break;
-    delay(3000);
+      return;
+
+    waitAsync(0);
+    if (!waitAsync(2000))
+      return;
+
     digitalWrite(INPUT_REL_PIN, HIGH); //выкл налив
-    delay(5000);
+    
+    waitAsync(0);
+    if (!waitAsync(5000))
+      return;
+
     wash_stage++; 
     break;
   case 2:
     digitalWrite(MAIN_PUMP_REL_PIN, LOW); //вкл главный насос
     digitalWrite(STEEPER_REL_PIN, !btn1.holding()); //вкл поворотный механизм
     
-    delay(60000);
+    waitAsync(0);
+    if (!waitAsync(60000))
+      return;
 
     wash_stage = 0;
     break;
