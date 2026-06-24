@@ -5,9 +5,9 @@
 #define DISPLAY_DIO_PIN     36      
 #define DISPLAY_CLK_PIN     38
 
-#define SALT_SENSOR_PIN     52     
+#define SALT_SENSOR_PIN     48     
 #define FULL_SENSOR_PIN     50
-#define FLOOD_SENSOR_PIN    48
+#define FLOOD_SENSOR_PIN    52
 #define DOOR_SENSOR_PIN     23
 
 //#define IR_LIGHT_PIN        6
@@ -40,7 +40,7 @@
 #define EB_NO_CALLBACK
 #define EB_NO_BUFFER
 #include "GyverSegment.h"
-#include "GTimer.h"
+#include "GyverTimer.h"
 #include "EncButton.h"
 
 
@@ -51,26 +51,16 @@ Button btn1(BUTTON_1_PIN);
 Button btn2(BUTTON_2_PIN);
 MultiButton btn3;
 
-uTimer32<millis> drainTimer(false), delTmr(false);
+GTimer delTmr(MS);
 
-bool panicFlag = false;
+bool paused = false;
+bool timerPauseFlag = false;
 bool isFull = false; //true - full, false - empty
 bool isSalt = false; //true - 
-bool isDoor = false; //true - close, false - open
+bool isDoor = false; //false - close, true` - open
 bool isFlood = false; //true - close, false - open
-uint8_t wash_stage = 0;
+int wash_stage = 0;
 
-
-bool delayTimer(uint16_t Tout, uTimer32<millis>* tm_obj) {
-  if (!tm_obj->running()) {
-    tm_obj->start();
-  }
-
-  if (!tm_obj->timeout(Tout)) return false;
-
-  tm_obj->stop();
-  return true;
-}
 
 void dispPrint(const char str[4] = "null") {
   disp.setCursor(0);
@@ -142,7 +132,7 @@ void debug() {
 void sensorsHandler() {
   isFull = !digitalRead(FULL_SENSOR_PIN);
   isSalt = !digitalRead(SALT_SENSOR_PIN);
-  isDoor = digitalRead(DOOR_SENSOR_PIN);
+  isDoor = !digitalRead(DOOR_SENSOR_PIN);
   isFlood = !digitalRead(FLOOD_SENSOR_PIN);
 }
 
@@ -153,46 +143,97 @@ void defPins() {
 }
 
 bool waitAsync(uint32_t waitTime) {
-  static uint32_t breakTime;
+  if (timerPauseFlag) {
+    timerPauseFlag = false;
+    delTmr.resume();
+  }
 
-  if (waitTime == 0)  
-    breakTime = millis();
-
-  if (millis() - breakTime > waitTime) 
-    return true;
-  
-  return false;
+  if (!delTmr.isEnabled()) {
+    delTmr.setTimeout(waitTime);
+    delTmr.start();
+  }
+  return delTmr.isReady();
 }
 
 void wash() {
+  if (paused) {
+    relayAllOff();
+    if (delTmr.isEnabled()) {
+      timerPauseFlag = true;
+      delTmr.stop();
+    }
+    return;
+  }
+
   switch (wash_stage) {
   case 0:
-    relayAllOff();
+    //relayAllOff();
+    break;
+
   case 1:
+    digitalWrite(DRAIN_REL_PIN, LOW);
+
+    if (!waitAsync(25000)) return;
+
+    digitalWrite(DRAIN_REL_PIN, HIGH);
+
+    wash_stage++;
+    break;
+
+  case 2:
     digitalWrite(INPUT_REL_PIN, LOW); //вкл налив
 
     if (!isFull) //ожидание налива
       return;
 
-    waitAsync(0);
-    if (!waitAsync(2000))
-      return;
-
     digitalWrite(INPUT_REL_PIN, HIGH); //выкл налив
-    
-    waitAsync(0);
-    if (!waitAsync(5000))
-      return;
 
+    if (!waitAsync(5000)) return;
     wash_stage++; 
     break;
-  case 2:
+
+  case 3:
     digitalWrite(MAIN_PUMP_REL_PIN, LOW); //вкл главный насос
-    digitalWrite(STEEPER_REL_PIN, !btn1.holding()); //вкл поворотный механизм
+    //digitalWrite(STEEPER_REL_PIN, LOW); //вкл поворотный механизм
     
-    waitAsync(0);
-    if (!waitAsync(60000))
-      return;
+    if (!waitAsync(25000)) return;
+    wash_stage++;
+    break;
+
+  case 4:
+    // digitalWrite(CAPSULE_REL_PIN, LOW);
+
+    if (!waitAsync(500)) return;
+
+    digitalWrite(CAPSULE_REL_PIN, HIGH);
+    
+    if (!waitAsync(60000)) return;
+    wash_stage++;
+    break;
+
+  case 5:
+    // digitalWrite(CAPSULE_REL_PIN, LOW);
+
+    if (!waitAsync(500)) return;
+
+    digitalWrite(CAPSULE_REL_PIN, HIGH);
+
+    if (!waitAsync(60000)) return;
+    wash_stage++;
+    break;
+
+  case 6:
+    digitalWrite(MAIN_PUMP_REL_PIN, HIGH); //вкл главный насос
+
+    if (!waitAsync(10000)) return;
+    wash_stage++;
+    break;
+  case 7:
+    digitalWrite(DRAIN_REL_PIN, LOW);
+
+    if (!waitAsync(35000)) return;
+
+    digitalWrite(DRAIN_REL_PIN, HIGH);
 
     wash_stage = 0;
     break;
@@ -203,44 +244,40 @@ void wash() {
 
 
 void buttons() {
+  btn3.tick(btn1, btn2);
+
   if (btn1.click()) {
     wash_stage = 1;
   }
-  if (btn1.hold()) {
 
-  }
-  if (btn2.hold()) {
-    static bool _St = false;
-
-    digitalWrite(MAIN_PUMP_REL_PIN, _St);
-    _St = !_St;
+  if (btn3.click()) {
+    paused = !paused;
   }
 
   if (btn2.click()) {
-    static bool _St = true;
+    static bool _St = false;
 
-    digitalWrite(DRAIN_REL_PIN, _St);
+    digitalWrite(STEEPER_REL_PIN, _St);
     _St = !_St;
   }
 
 }
 
 
-void yield() {
-  buttons();
-  sensorsHandler();
-  colonTick();
-  debug();
-}
-
 void protector() {
   if (isFlood) {
-    relayAllOff();
     wash_stage = 0;
-    delay(50);
+
+    relayAllOff();
+    dispPrint("flod");
     digitalWrite(DRAIN_REL_PIN, LOW);
-    delay(30000);
+    delay(60000);
     digitalWrite(DRAIN_REL_PIN, HIGH);
+  }
+
+  paused = isDoor;
+  if (isDoor) {
+    dispPrint("door");
   }
 }
 
@@ -263,8 +300,6 @@ void setup() {
   pinMode(LIGHT_2_PIN,          OUTPUT);
   pinMode(BUSY_LIGHT_PIN,       OUTPUT);
   pinMode(BUZZER_PIN,           OUTPUT);
-  pinMode(BUTTON_1_PIN,         INPUT);
-  pinMode(BUTTON_2_PIN,         INPUT);
   pinMode(DRAIN_REL_PIN,        OUTPUT);
   pinMode(INPUT_REL_PIN,        OUTPUT);
   pinMode(STEEPER_REL_PIN,      OUTPUT);
@@ -276,14 +311,20 @@ void setup() {
   relayAllOff();
   defPins();  
   
-  runningStringPrint("kx-home");
+  //runningStringPrint("kx-home");
   delay(500);
   tone(BUZZER_PIN, 1000, 50);
 }
 
 void loop() {
-  btn3.tick(btn1, btn2);
-
-  yield();
+  disp.setCursor(0);
+  disp.print(wash_stage);
+  disp.update();
+  
+  debug();
+  buttons();
+  sensorsHandler();
+  protector();
+  colonTick();
   wash();
 }
